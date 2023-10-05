@@ -3,14 +3,14 @@ const web3 = new Web3("http://127.0.0.1:7545");
 const fs = require("fs");
 const keccak256 = require("keccak256");
 const { TSMClient, algorithms, curves } = require("@sepior/tsm");
-const crypto = require("crypto");
 const credsRaw = fs.readFileSync("creds.json");
 const creds = JSON.parse(credsRaw);
 const { LegacyTransaction } = require("@ethereumjs/tx");
 const asn = require("asn1.js");
 const ethers = require("ethers");
-const { Common, Hardfork } = require("@ethereumjs/common");
-const chainId = 1337; // The chain ID of your local network
+const { Common, Chain, Hardfork } = require("@ethereumjs/common");
+// const chainId = 1337; // The chain ID of your local network
+const chainId = Chain.Mainnet; // The chain ID of your local network
 const txDecoder = require('ethereum-tx-decoder');
 
 async function sendTxn() {
@@ -97,27 +97,27 @@ async function sendTxn() {
 
   var hashValueKeccak = keccak256(decodedPkValue);
   console.log("hashValueKeccak", hashValueKeccak.toString("hex"));
-  var address2 = Buffer.from(hashValueKeccak.slice(-20)).toString("hex");
-  console.log("address2", address2);
+  var senderAddress = Buffer.from(hashValueKeccak.slice(-20)).toString("hex");
+  console.log("senderAddress", senderAddress);
 
   // Get Balance of the newly created account
-  address2 = "0x" + address2;
-  let balance = await getEthBalance(address2);
+  senderAddress = "0x" + senderAddress;
+  let balance = await getEthBalance(senderAddress);
   console.log("Eth account balance before transfer:", balance);
   const accounts = await web3.eth.getAccounts();
   // Fund newly created account
   const txn = await web3.eth.sendTransaction({
-    to: address2,
+    to: senderAddress,
     from: accounts[2],
     value: web3.utils.toWei("1", "ether"),
   });
   console.log("txn", txn);
-  balance = await getEthBalance(address2);
+  balance = await getEthBalance(senderAddress);
   console.log("Eth account balance after transfer:", balance);
 
   // Create a raw Ethereum transaction
   const addressTo = "0xE2a18e03e7fE8dc974614BA6De081cd782239424";
-  let count = await web3.eth.getTransactionCount(addressTo, "latest");
+  let count = await web3.eth.getTransactionCount(senderAddress, "latest");
   count = "0x" + count.toString(16);
   const transferAmountValue = web3.utils.numberToHex(
     web3.utils.toWei("0.1", "ether")
@@ -135,14 +135,14 @@ async function sendTxn() {
     gasPrice: web3.utils.toHex(gasPrice),
     gasLimit: web3.utils.toHex(gasLimit),
     to: addressTo,
+    from: senderAddress,
     value: transferAmountValue,
     data: "0x",
   };
 
-  const transaction = LegacyTransaction.fromTxData(rawTxn, { customCommon });
+  const transaction = LegacyTransaction.fromTxData(rawTxn, { common: customCommon, freeze: false });
+  transaction.activeCapabilities = []; // Remove eip155 for Ganache as it doesn't support it
   let unsignedTxHash = transaction.getHashedMessageToSign();
-  // unsignedTxHash = rlp.encode(unsignedTxHash);
-  // unsignedTxHash = Buffer.from(unsignedTxHash).toString('hex')
   console.log("hash1 generated: ", unsignedTxHash);
 
   // generate partial signatureœ
@@ -193,48 +193,74 @@ async function sendTxn() {
   console.log("S2", s);
 
   // sign transaction
-  rawTxn.v = web3.utils.toHex(
-    chainId ? recoveryID + (chainId * 2 + 35) : recoveryID + 27
-  );
+  rawTxn.v = web3.utils.numberToHex(recoveryID + 27);
   // rawTxn.v = "0x" + recoveryID; // Error: Legacy txs need either v = 27/28 or v >= 37 (EIP-155 replay protection), got v = 0
   rawTxn.r = "0x" + r;
   rawTxn.s = "0x" + s;
   console.log("Signed Txn", rawTxn);
   const sig = {
-    r: "0x" + r,
-    s: "0x" + s,
-    v: web3.utils.toHex(
-      chainId ? recoveryID + (chainId * 2 + 35) : recoveryID + 27
-    ),
+    r: rawTxn.r,
+    s: rawTxn.s,
+    v: rawTxn.v
   };
+  transaction.v = web3.utils.toBigInt(rawTxn.v);
+  transaction.r = web3.utils.toBigInt(rawTxn.r);
+  transaction.s = web3.utils.toBigInt(rawTxn.s);
 
-  let tranxn = LegacyTransaction.fromTxData(rawTxn, { customCommon });
-  txnHash = tranxn.hash();
-  let signedTxn = tranxn.serialize();
-  signedTxn = "0x" +  Buffer.from(signedTxn).toString("hex");
+  let signedTxn = transaction.serialize();
+  // signedTxn = "0x" +  Buffer.from(signedTxn).toString("hex");
+  signedTxn = web3.utils.bytesToHex(signedTxn);
   console.log("signedTxn", signedTxn)
   console.log("decoded txn", txDecoder.decodeTx(signedTxn))
 
   const recoveredAddress = await ethers.utils.recoverAddress(unsignedTxHash, sig);
-  console.log("recoveredAddress", recoveredAddress);
+  console.log(
+    "recoveredAddress equals sender address: ",
+    recoveredAddress.toLowerCase() === senderAddress.toLowerCase(),
+    recoveredAddress,
+    senderAddress
+  );
 
-  web3.eth.sendSignedTransaction(signedTxn, function (error, hash) {
-    if (!error) {
-      console.log(
-        "The hash of your transaction is: ",
-        hash,
-        "\n Check to view the status of your transaction!"
-      );
-    } else {
-      console.log(
-        "Something went wrong while submitting your transaction:",
-        error
-      );
-    }
-  });
+  console.log(
+    "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+  );
+  console.log(
+    `Eth Sender => ${senderAddress} account balance => ${balance} before transfer to account => ${addressTo}`
+  );
+  balance = await getEthBalance(addressTo);
+  console.log(
+    `Eth Receiver => ${addressTo} account balance => ${balance} before transfer from account => ${senderAddress}`
+  );
+  console.log(
+    "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+  );
+
+  const hash = await web3.eth.sendSignedTransaction(signedTxn)
+      .on('error', error => console.log("error: ", error))
+      .on('confirmation', confirmation => console.log("confirmation: ", confirmation))
+      .on('receipt', receipt => console.log("receipt: ", receipt))
+      .on('sent', sentTransaction => console.log("sentTransaction: ", sentTransaction))
+      .on('sending', transactionToBeSent => console.log("transactionToBeSent: ", transactionToBeSent))
+      .catch(console.log);
+
+    console.log("hash: ", hash);
+    console.log(
+      "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+    );
+    balance = await getEthBalance(senderAddress);
+    console.log(
+      `Eth Sender => ${senderAddress} account balance => ${balance} after transfer to account => ${addressTo}`
+    );
+    balance = await getEthBalance(addressTo);
+    console.log(
+      `Eth Receiver => ${addressTo} account balance => ${balance} after transfer from account => ${senderAddress}`
+    );
+    console.log(
+      "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+    );
 }
 
-sendTxn();
+sendTxn().then(() => process.exit());
 
 function ASN1ParseSecp256k1Signature(derSignature) {
   // Parse aggregated signature
